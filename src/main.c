@@ -19,7 +19,6 @@
 #include <zephyr/device.h>
 #include <zephyr/init.h>
 #include <zephyr/drivers/uart.h>
-#include <zephyr/drivers/bluetooth/hci_driver.h>
 #include <zephyr/drivers/gpio.h>
 
 #include <zephyr/usb/usb_device.h>
@@ -59,7 +58,7 @@ static K_FIFO_DEFINE(uart_tx_queue);
 #define ST_DISCARD 3	/* Dropping packet. */
 
 /* Length of a discard/flush buffer.
- * This is sized to align with a BLE HCI packet:
+ * This is sized to align with a Bluetooth HCI packet:
  * 1 byte H:4 header + 32 bytes ACL/event data
  * Bigger values might overflow the stack since this is declared as a local
  * variable, smaller ones will force the caller to call into discard more
@@ -155,8 +154,8 @@ static void rx_isr(void)
 				 * interrupt. On failed allocation state machine
 				 * is reset.
 				 */
-				buf = bt_buf_get_tx(BT_BUF_H4, K_NO_WAIT,
-						    &type, sizeof(type));
+				buf = bt_buf_get_tx(bt_buf_type_from_h4(type, BT_BUF_OUT),
+						    K_NO_WAIT, NULL, 0);
 				if (!buf) {
 					LOG_ERR("No available command buffers!");
 					state = ST_IDLE;
@@ -237,17 +236,19 @@ static void bt_uart_isr(const struct device *unused, void *user_data)
 	ARG_UNUSED(unused);
 	ARG_UNUSED(user_data);
 
-	if (!(uart_irq_rx_ready(hci_uart_dev) ||
-	      uart_irq_tx_ready(hci_uart_dev))) {
-		LOG_DBG("spurious interrupt");
-	}
+	while (uart_irq_update(hci_uart_dev) && uart_irq_is_pending(hci_uart_dev)) {
+		if (!(uart_irq_rx_ready(hci_uart_dev) ||
+	      		uart_irq_tx_ready(hci_uart_dev))) {
+			LOG_DBG("spurious interrupt");
+		}
 
-	if (uart_irq_tx_ready(hci_uart_dev)) {
-		tx_isr();
-	}
+		if (uart_irq_tx_ready(hci_uart_dev)) {
+			tx_isr();
+		}
 
-	if (uart_irq_rx_ready(hci_uart_dev)) {
-		rx_isr();
+		if (uart_irq_rx_ready(hci_uart_dev)) {
+			rx_isr();
+		}
 	}
 }
 
@@ -261,13 +262,10 @@ static void tx_thread(void *p1, void *p2, void *p3)
 		buf = k_fifo_get(&tx_queue, K_FOREVER);
 		/* Pass buffer to the stack */
 		err = bt_send(buf);
-        if (err!=BT_HCI_ERR_SUCCESS) {
-            if (err!=BT_HCI_ERR_EXT_HANDLED) {
-                LOG_ERR("Unable to send (err %d)", err);
-            }
-            net_buf_unref(buf);
-        }
-
+		if (err) {
+			LOG_ERR("Unable to send (err %d)", err);
+			net_buf_unref(buf);
+		}
 		/* Give other threads a chance to run if tx_queue keeps getting
 		 * new data all the time.
 		 */
@@ -277,8 +275,7 @@ static void tx_thread(void *p1, void *p2, void *p3)
 
 static int h4_send(struct net_buf *buf)
 {
-	LOG_DBG("buf %p type %u len %u", buf, bt_buf_get_type(buf),
-		    buf->len);
+	LOG_DBG("buf %p type %u len %u", buf, buf->data[0], buf->len);
 
 	k_fifo_put(&uart_tx_queue, buf);
 	uart_irq_tx_enable(hci_uart_dev);
