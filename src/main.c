@@ -29,6 +29,7 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/buf.h>
 #include <zephyr/bluetooth/hci_raw.h>
+#include <zephyr/drivers/bluetooth.h>
 
 // nRF54L15 - from ncs/nrf/samples/bluetooth/conn_time_sync
 #include "controller_time.h"
@@ -44,6 +45,9 @@ static K_FIFO_DEFINE(tx_queue);
 
 /* RX in terms of bluetooth communication */
 static K_FIFO_DEFINE(uart_tx_queue);
+
+#define  HCI_CMD_ISO_TIMESYNC   (0x200)
+static uint8_t hci_cmd_iso_timesync_cb(struct net_buf *buf);
 
 #define H4_CMD 0x01
 #define H4_ACL 0x02
@@ -252,16 +256,44 @@ static void bt_uart_isr(const struct device *unused, void *user_data)
     }
 }
 
+static bool handle_cmd(struct net_buf *buf, int *err)
+{
+    if( buf->len < 4 ) {
+        *err = BT_HCI_ERR_INVALID_PARAM;
+        LOG_ERR("No HCI Command header");
+        return false;
+    }
+    uint8_t type = buf->data[0];
+    uint16_t op = sys_get_le16(&buf->data[1]);
+    uint8_t len = buf->data[3];
+    if( type != H4_CMD ) {
+        return true;
+    }
+    LOG_INF("type: %02x op: %04x len: %d", type, op, len );
+    switch( op ) {
+#if defined(CONFIG_ENABLE_AUDIO_TIMESYNC)
+        case BT_OP(BT_OGF_VS, HCI_CMD_ISO_TIMESYNC):
+            *err = hci_cmd_iso_timesync_cb(buf);
+            net_buf_unref(buf);
+            return false;
+#endif
+        default:
+            break;
+    }
+    return true;
+}
+
 static void tx_thread(void *p1, void *p2, void *p3)
 {
     while (1) {
         struct net_buf *buf;
-        int err;
-
+        int err = BT_HCI_ERR_SUCCESS;
         /* Wait until a buffer is available */
         buf = k_fifo_get(&tx_queue, K_FOREVER);
         /* Pass buffer to the stack */
-        err = bt_send(buf);
+        if( handle_cmd(buf, &err) ) {
+            err = bt_send(buf);
+        }
         if (err) {
             LOG_ERR("Unable to send (err %d)", err);
             net_buf_unref(buf);
@@ -368,20 +400,15 @@ static const struct gpio_dt_spec timesync_pin = GPIO_DT_SPEC_GET(TIMESYNC_GPIO, 
 #error "No timesync gpio available!"
 #endif
 
-#define  HCI_CMD_ISO_TIMESYNC   (0x200)
-
 struct hci_cmd_iso_timestamp_response {
     struct bt_hci_evt_cc_status cc;
     uint32_t timestamp;
 } __packed;
 
-uint8_t hci_cmd_iso_timesync_cb(struct net_buf *buf)
+static uint8_t hci_cmd_iso_timesync_cb(struct net_buf *buf)
 {
     struct net_buf *rsp;
     struct hci_cmd_iso_timestamp_response *response;
-
-    LOG_INF("buf %p type %u len %u", buf, bt_buf_get_type(buf), buf->len);
-    LOG_INF("buf[0] = 0x%02x", buf->data[0]);
 
     uint32_t timestamp_second_us = 0;
 
@@ -404,13 +431,10 @@ uint8_t hci_cmd_iso_timesync_cb(struct net_buf *buf)
 
     // emit event
     rsp = bt_hci_cmd_complete_create(BT_OP(BT_OGF_VS, HCI_CMD_ISO_TIMESYNC), sizeof(*response));
+
     response = net_buf_add(rsp, sizeof(*response));
     response->cc.status = BT_HCI_ERR_SUCCESS;
     response->timestamp = timestamp_second_us;
-
-    if (IS_ENABLED(CONFIG_BT_HCI_RAW_H4)) {
-        net_buf_push_u8(rsp, H4_EVT);
-    }
 
     h4_send( rsp );
 
@@ -418,7 +442,7 @@ uint8_t hci_cmd_iso_timesync_cb(struct net_buf *buf)
     gpio_pin_set_dt( &timesync_pin, 0 );
 #endif
 
-    return BT_HCI_ERR_EXT_HANDLED;
+    return BT_HCI_ERR_SUCCESS;
 }
 #endif
 
@@ -461,18 +485,9 @@ int main(void)
     }
 
 #if defined(CONFIG_ENABLE_AUDIO_TIMESYNC)
-    /* Register iso_timesync command */
-    static struct bt_hci_raw_cmd_ext cmd_list = {
-        .op = BT_OP(BT_OGF_VS, HCI_CMD_ISO_TIMESYNC),
-        .min_len = 1,
-        .func = hci_cmd_iso_timesync_cb
-    };
-
 #if DT_NODE_HAS_STATUS(TIMESYNC_GPIO, okay)
     gpio_pin_configure_dt(&timesync_pin, GPIO_OUTPUT_INACTIVE);
 #endif
-
-    bt_hci_raw_cmd_ext_register(&cmd_list, 1);
 #endif
 
     /* Spawn the TX thread and start feeding commands and data to the
