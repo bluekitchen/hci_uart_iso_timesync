@@ -21,7 +21,7 @@
 #include <nrfx_timer.h>
 #include <hal/nrf_ipc.h>
 #include <hal/nrf_egu.h>
-#include "conn_time_sync.h"
+#include "controller_time.h"
 
 static const nrfx_rtc_t app_rtc_instance = NRFX_RTC_INSTANCE(0);
 static nrfx_timer_t app_timer_instance = NRFX_TIMER_INSTANCE(NRF_TIMER0);
