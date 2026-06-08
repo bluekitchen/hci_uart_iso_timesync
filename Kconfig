@@ -7,9 +7,11 @@ config ENABLE_AUDIO_TIMESYNC
     default SOC_SERIES_NRF53X || SOC_NRF52833 || SOC_SERIES_NRF54LX
     select NRFX_RTC0 if SOC_SERIES_NRF53X
     select NRFX_DPPI if SOC_SERIES_NRF53X
+    select NRFX_TIMER if SOC_SERIES_NRF53X
     select NRFX_TIMER0 if SOC_SERIES_NRF53X
     select NRFX_RTC2 if SOC_SERIES_NRF52X
     select NRFX_PPI if SOC_SERIES_NRF52X
+    select NRFX_TIMER if SOC_SERIES_NRF52X
     select NRFX_TIMER1 if SOC_SERIES_NRF52X
 endmenu
 
@@ -18,4 +20,3 @@ module-str = audio-sync-timer
 
 source "subsys/logging/Kconfig.template.log_config"
 source "Kconfig.zephyr"
-
